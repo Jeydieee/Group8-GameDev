@@ -209,6 +209,7 @@ BTN_OUTLINE = (200, 200, 200)
 font = pygame.font.SysFont("segoeuisymbol", 22)
 large_font = pygame.font.SysFont("segoeui", 32, bold=True)
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
+screen_rect = screen.get_rect()
 pygame.display.set_caption("Pentago AI - Group 8")
 
 
@@ -304,11 +305,12 @@ def main():
         if game.turn == WHITE and not game.is_over():
             draw_board(screen, game)
             status_surf = large_font.render(status_msg, True, TEXT_COLOR)
-            screen.blit(status_surf, (MARGIN_X, 30))
+            status_rect = status_surf.get_rect(centerx=screen_rect.centerx, y=30)
+            screen.blit(status_surf, status_rect)
             pygame.display.flip()
             
             # AI uses the raw numpy board from the state
-            best_move = ai.get_best_move(game.board, depth=2) 
+            best_move = ai.get_best_move(game.board, depth=2)
             game.apply_full_move(best_move)
             
             if not game.is_over():
@@ -325,7 +327,8 @@ def main():
             else: status_msg = "Game Over! It's a Draw! 🤝"
             
         status_surf = large_font.render(status_msg, True, TEXT_COLOR)
-        screen.blit(status_surf, (MARGIN_X, 30))
+        status_rect = status_surf.get_rect(centerx=screen_rect.centerx, y=30)
+        screen.blit(status_surf, status_rect)
 
         pygame.display.flip()
         clock.tick(30)
