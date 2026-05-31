@@ -12,8 +12,8 @@ BLACK = 1
 WHITE = 2
 
 QUAD_ORIGINS = [(0, 0), (0, 3), (3, 0), (3, 3)]
-_CW  = [6, 3, 0, 7, 4, 1, 8, 5, 2]   
-_CCW = [2, 5, 8, 1, 4, 7, 0, 3, 6]   
+_CW  = [6, 3, 0, 7, 4, 1, 8, 5, 2]
+_CCW = [2, 5, 8, 1, 4, 7, 0, 3, 6]
 
 def new_board() -> np.ndarray:
     return np.zeros((6, 6), dtype=np.int8)
@@ -53,7 +53,7 @@ def check_winner(board: np.ndarray) -> int:
         if window[0] != EMPTY and np.all(window == window[0]):
             if window[0] == BLACK: black_wins = True
             else: white_wins = True
-    if black_wins and white_wins: return 0 
+    if black_wins and white_wins: return 0
     if black_wins: return BLACK
     if white_wins: return WHITE
     return -1
@@ -81,9 +81,9 @@ class GameState:
     def __init__(self):
         self.board = new_board()
         self.turn = BLACK
-        self.phase = "place"  
+        self.phase = "place"
         self.pending_place: Optional[tuple[int, int]] = None
-        self.winner = -1 
+        self.winner = -1
         self.move_count = 0
         self.history: list[dict] = []
 
@@ -185,11 +185,11 @@ class PentagoAI:
         return move
 
 # ==========================================
-# 3. PYGAME UI 
+# 3. PYGAME UI
 # ==========================================
 pygame.init()
 
-WIDTH, HEIGHT = 700, 850
+WIDTH, HEIGHT = 1000, 750
 CELL_SIZE = 80
 BOARD_SIZE = CELL_SIZE * 6
 MARGIN_X = (WIDTH - BOARD_SIZE) // 2
@@ -206,10 +206,11 @@ BTN_HOVER = (235, 235, 235)
 BTN_OUTLINE = (200, 200, 200)
 
 # Using Windows built-in symbol font for the curved arrows
-font = pygame.font.SysFont("segoeuisymbol", 22) 
+font = pygame.font.SysFont("segoeuisymbol", 22)
 large_font = pygame.font.SysFont("segoeui", 32, bold=True)
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("Pentago AI - Group 8")
+
 
 class Button:
     def __init__(self, x, y, w, h, text, action_val):
@@ -258,17 +259,17 @@ def main():
     status_msg = "Game Started. You are Black. Place a marble."
 
     btn_y = MARGIN_Y + BOARD_SIZE + 30
-    btn_w = 50 # Width is set back to 50 for the clean arrow icons
+    btn_w = 70
     
     buttons = [
-        Button(MARGIN_X + 0,   btn_y, btn_w, 40, "Q1 ↺", (0, -1)),
-        Button(MARGIN_X + 55,  btn_y, btn_w, 40, "Q1 ↻",  (0, 1)),
-        Button(MARGIN_X + 130, btn_y, btn_w, 40, "Q2 ↺", (1, -1)),
-        Button(MARGIN_X + 185, btn_y, btn_w, 40, "Q2 ↻",  (1, 1)),
-        Button(MARGIN_X + 260, btn_y, btn_w, 40, "Q3 ↺", (2, -1)),
-        Button(MARGIN_X + 315, btn_y, btn_w, 40, "Q3 ↻",  (2, 1)),
-        Button(MARGIN_X + 390, btn_y, btn_w, 40, "Q4 ↺", (3, -1)),
-        Button(MARGIN_X + 445, btn_y, btn_w, 40, "Q4 ↻",  (3, 1)),
+        Button(MARGIN_X + 0,   btn_y, btn_w, 50, "Q1 ↺", (0, -1)),
+        Button(MARGIN_X + 75,  btn_y, btn_w, 50, "Q1 ↻",  (0, 1)),
+        Button(MARGIN_X + 160, btn_y, btn_w, 50, "Q2 ↺", (1, -1)),
+        Button(MARGIN_X + 235, btn_y, btn_w, 50, "Q2 ↻",  (1, 1)),
+        Button(MARGIN_X + 320, btn_y, btn_w, 50, "Q3 ↺", (2, -1)),
+        Button(MARGIN_X + 395, btn_y, btn_w, 50, "Q3 ↻",  (2, 1)),
+        Button(MARGIN_X + 480, btn_y, btn_w, 50, "Q4 ↺", (3, -1)),
+        Button(MARGIN_X + 555, btn_y, btn_w, 50, "Q4 ↻",  (3, 1)),
     ]
 
     clock = pygame.time.Clock()
