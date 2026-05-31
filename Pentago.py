@@ -208,6 +208,7 @@ BTN_OUTLINE = (200, 200, 200)
 # Using Windows built-in symbol font for the curved arrows
 font = pygame.font.SysFont("segoeuisymbol", 22)
 large_font = pygame.font.SysFont("segoeui", 32, bold=True)
+small_font = pygame.font.SysFont("segoeui", 20)
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 screen_rect = screen.get_rect()
 pygame.display.set_caption("Pentago AI - Group 8")
@@ -251,8 +252,30 @@ def draw_board(surface, game: GameState):
     q_labels = [("Q1", 0, 0), ("Q2", 3, 0), ("Q3", 0, 3), ("Q4", 3, 3)]
     for text, cx, cy in q_labels:
         # Revert to standard segoeui for the board quadrant labels so they match the title
-        lbl = pygame.font.SysFont("segoeui", 20).render(text, True, (150, 150, 150))
+        lbl = small_font.render(text, True, (150, 150, 150))
         surface.blit(lbl, (MARGIN_X + cx*CELL_SIZE + 5, MARGIN_Y + cy*CELL_SIZE + 5))
+
+def render_frame(surface, game: GameState, status_msg: str, buttons: list):
+    surface.fill(BG_COLOR)
+    draw_board(surface, game)
+    if game.phase == "rotate" and not game.is_over():
+        for btn in buttons:
+            btn.draw(surface)
+    status_surf = large_font.render(status_msg, True, TEXT_COLOR)
+    status_rect = status_surf.get_rect(centerx=surface.get_rect().centerx, y=30)
+    surface.blit(status_surf, status_rect)
+    pygame.display.flip()
+
+def get_status_message(game: GameState) -> str:
+    if game.winner == BLACK: return "Game Over! You Win! 🎉"
+    if game.winner == WHITE: return "Game Over! AI Wins! 🤖"
+    return "Game Over! It's a Draw! 🤝"
+
+def get_board_cell(mouse_pos: tuple) -> Optional[tuple[int, int]]:
+    x, y = mouse_pos
+    if not (MARGIN_X <= x <= MARGIN_X + BOARD_SIZE and MARGIN_Y <= y <= MARGIN_Y + BOARD_SIZE):
+        return None
+    return (y - MARGIN_Y) // CELL_SIZE, (x - MARGIN_X) // CELL_SIZE
 
 def main():
     game = GameState()
@@ -262,23 +285,18 @@ def main():
     btn_y = MARGIN_Y + BOARD_SIZE + 30
     btn_w = 70
     
-    buttons = [
-        Button(MARGIN_X + 0,   btn_y, btn_w, 50, "Q1 ↺", (0, -1)),
-        Button(MARGIN_X + 75,  btn_y, btn_w, 50, "Q1 ↻",  (0, 1)),
-        Button(MARGIN_X + 160, btn_y, btn_w, 50, "Q2 ↺", (1, -1)),
-        Button(MARGIN_X + 235, btn_y, btn_w, 50, "Q2 ↻",  (1, 1)),
-        Button(MARGIN_X + 320, btn_y, btn_w, 50, "Q3 ↺", (2, -1)),
-        Button(MARGIN_X + 395, btn_y, btn_w, 50, "Q3 ↻",  (2, 1)),
-        Button(MARGIN_X + 480, btn_y, btn_w, 50, "Q4 ↺", (3, -1)),
-        Button(MARGIN_X + 555, btn_y, btn_w, 50, "Q4 ↻",  (3, 1)),
-    ]
+    QUAD_LABELS = ["Q1", "Q2", "Q3", "Q4"]
+    btn_w, btn_gap = 70, 5
+    buttons = []
+    for i, label in enumerate(QUAD_LABELS):
+        base_x = MARGIN_X + i * (btn_w * 2 + btn_gap * 3)
+        buttons.append(Button(base_x,                  btn_y, btn_w, 50, f"{label} ↺", (i, -1)))
+        buttons.append(Button(base_x + btn_w + btn_gap, btn_y, btn_w, 50, f"{label} ↻", (i,  1)))
 
     clock = pygame.time.Clock()
     running = True
 
     while running:
-        screen.fill(BG_COLOR)
-        
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
@@ -287,9 +305,9 @@ def main():
                 mouse_pos = event.pos
                 
                 if game.turn == BLACK and game.phase == "place":
-                    if MARGIN_X <= mouse_pos[0] <= MARGIN_X + BOARD_SIZE and MARGIN_Y <= mouse_pos[1] <= MARGIN_Y + BOARD_SIZE:
-                        c = (mouse_pos[0] - MARGIN_X) // CELL_SIZE
-                        r = (mouse_pos[1] - MARGIN_Y) // CELL_SIZE
+                    cell = get_board_cell(mouse_pos)
+                    if cell:
+                        r, c = cell
                         if game.place(r, c):
                             status_msg = "Marble placed. Now select a quadrant to rotate."
 
@@ -303,11 +321,7 @@ def main():
 
         # AI Turn
         if game.turn == WHITE and not game.is_over():
-            draw_board(screen, game)
-            status_surf = large_font.render(status_msg, True, TEXT_COLOR)
-            status_rect = status_surf.get_rect(centerx=screen_rect.centerx, y=30)
-            screen.blit(status_surf, status_rect)
-            pygame.display.flip()
+            render_frame(screen, game, status_msg, buttons)
             
             # AI uses the raw numpy board from the state
             best_move = ai.get_best_move(game.board, depth=2)
@@ -316,21 +330,10 @@ def main():
             if not game.is_over():
                 status_msg = "AI played. Your turn."
 
-        draw_board(screen, game)
-        
-        if game.phase == "rotate" and not game.is_over():
-            for btn in buttons: btn.draw(screen)
-
         if game.is_over():
-            if game.winner == BLACK: status_msg = "Game Over! You Win! 🎉"
-            elif game.winner == WHITE: status_msg = "Game Over! AI Wins! 🤖"
-            else: status_msg = "Game Over! It's a Draw! 🤝"
-            
-        status_surf = large_font.render(status_msg, True, TEXT_COLOR)
-        status_rect = status_surf.get_rect(centerx=screen_rect.centerx, y=30)
-        screen.blit(status_surf, status_rect)
-
-        pygame.display.flip()
+            status_msg = get_status_message(game)
+        
+        render_frame(screen, game, status_msg, buttons)
         clock.tick(30)
 
     pygame.quit()
