@@ -144,11 +144,11 @@ class GameState:
 #   the correct real-time algorithm; use GA only to tune weights separately.
 
 _WIN_SCORE    = 100_000
-_FOUR_SCORE   =  10_000   # 4-in-a-row (one move from winning)
-_THREE_SCORE  =    200    # 3-in-a-row
-_TWO_SCORE    =     10    # 2-in-a-row
-_CENTER_BONUS =     15    # quadrant centre cells
-_CORNER_BONUS =      5    # quadrant corner cells
+_FOUR_SCORE   =  50_000   # much closer to a forced win — AI will chase these
+_THREE_SCORE  =   1_500   # threats are now taken seriously
+_TWO_SCORE    =     80    # early development matters more
+_CENTER_BONUS =     40    # center control is a real strategic advantage
+_CORNER_BONUS =     15    # quadrant corner cells
 
 _CENTERS = [(1, 1), (1, 4), (4, 1), (4, 4)]
 _CORNERS = [(0, 0), (0, 2), (0, 3), (0, 5),
@@ -184,14 +184,14 @@ class PentagoAI:
         score = 0
         for window in _get_all_5_windows(board):
             score += _score_window_for(window, self.ai_player)
-            score -= _score_window_for(window, self.human_player)
+            score -= _score_window_for(window, self.human_player) * 1.4  # fear opponent more
 
         for r, c in _CENTERS:
             if   board[r, c] == self.ai_player:    score += _CENTER_BONUS
-            elif board[r, c] == self.human_player: score -= _CENTER_BONUS
+            elif board[r, c] == self.human_player: score -= _CENTER_BONUS * 2
         for r, c in _CORNERS:
             if   board[r, c] == self.ai_player:    score += _CORNER_BONUS
-            elif board[r, c] == self.human_player: score -= _CORNER_BONUS
+            elif board[r, c] == self.human_player: score -= _CORNER_BONUS * 2
         return score
 
     # ── Immediate-threat scanner ──────────────────────────────────────────────
@@ -270,9 +270,7 @@ class PentagoAI:
             return min_eval, best_move
 
     # ── Public entry point: iterative deepening ───────────────────────────────
-    def get_best_move(self, board: np.ndarray,
-                      depth: int = 3,
-                      time_limit: float = 2.5) -> tuple:
+    def get_best_move(self, board: np.ndarray, depth: int = 4, time_limit: float = 3.5) -> tuple:
         """
         Iterative-deepening alpha-beta.  Searches d=1,2,...,depth within
         time_limit seconds and returns the best move from the deepest
