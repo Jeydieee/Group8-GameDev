@@ -4,6 +4,7 @@ from typing import Optional
 import math
 import sys
 import os
+import time as _time
 
 # ==========================================
 # 1. CORE ENGINE (Raw Math & Rules)
@@ -114,58 +115,198 @@ class GameState:
     def is_over(self) -> bool:
         return self.winner != -1
 
+
 # ==========================================
-# 2. AI MODULE
+# 2. AI MODULE  (FIXED)
 # ==========================================
+#
+# WHAT WAS WRONG IN THE ORIGINAL:
+#   a) evaluate_board only checked 4 center squares (max ±40 score).
+#      The AI literally couldn't distinguish a near-win from a random board.
+#   b) depth=2 means "I place → opponent places → static eval."
+#      It cannot see any threat that resolves in 3 moves.
+#   c) No window scoring — consecutive marbles were invisible to the heuristic.
+#   d) No immediate-threat pre-scan before deep search.
+#   e) No move ordering — alpha-beta pruned almost nothing.
+#   f) No iterative deepening — UI blocked with no time-budget safety valve.
+#
+# FIXES:
+#   1. Window-based heuristic (every 5-cell window, all directions)
+#   2. Immediate win/block pre-scan  (O(36×8) before any tree search)
+#   3. Move ordering before alpha-beta  (dramatically improves pruning)
+#   4. Iterative Deepening (IDDFS) with wall-clock time limit
+#   5. Default depth raised to 3 (viable because of improved pruning)
+#
+# NOTE ON GENETIC ALGORITHMS:
+#   A GA is an *offline* tool for tuning the heuristic weight constants below
+#   (run GA tournaments to evolve _FOUR_SCORE, _THREE_SCORE, etc.).
+#   It does NOT replace alpha-beta during live play.  IDDFS + alpha-beta is
+#   the correct real-time algorithm; use GA only to tune weights separately.
+
+_WIN_SCORE    = 100_000
+_FOUR_SCORE   =  10_000   # 4-in-a-row (one move from winning)
+_THREE_SCORE  =    200    # 3-in-a-row
+_TWO_SCORE    =     10    # 2-in-a-row
+_CENTER_BONUS =     15    # quadrant centre cells
+_CORNER_BONUS =      5    # quadrant corner cells
+
+_CENTERS = [(1, 1), (1, 4), (4, 1), (4, 4)]
+_CORNERS = [(0, 0), (0, 2), (0, 3), (0, 5),
+            (2, 0), (2, 2), (2, 3), (2, 5),
+            (3, 0), (3, 2), (3, 3), (3, 5),
+            (5, 0), (5, 2), (5, 3), (5, 5)]
+
+
+def _score_window_for(window: np.ndarray, player: int) -> int:
+    opp   = WHITE if player == BLACK else BLACK
+    ai_n  = int(np.sum(window == player))
+    opp_n = int(np.sum(window == opp))
+    if ai_n > 0 and opp_n > 0: return 0   # contested — no value to either
+    if ai_n == 5: return _WIN_SCORE
+    if ai_n == 4: return _FOUR_SCORE
+    if ai_n == 3: return _THREE_SCORE
+    if ai_n == 2: return _TWO_SCORE
+    return 0
+
+
 class PentagoAI:
-    def __init__(self, ai_player, human_player):
-        self.ai_player = ai_player
+    def __init__(self, ai_player: int, human_player: int):
+        self.ai_player    = ai_player
         self.human_player = human_player
 
-    def evaluate_board(self, board_state: np.ndarray):
-        winner = check_winner(board_state)
-        if winner == self.ai_player: return 100000
-        if winner == self.human_player: return -100000
-        if winner == 0: return 0
+    # ── Heuristic evaluation ─────────────────────────────────────────────────
+    def evaluate_board(self, board: np.ndarray) -> int:
+        winner = check_winner(board)
+        if winner == self.ai_player:    return  _WIN_SCORE
+        if winner == self.human_player: return -_WIN_SCORE
+        if winner == 0:                 return 0
+
         score = 0
-        centers = [(1,1), (1,4), (4,1), (4,4)]
-        for r, c in centers:
-            if board_state[r, c] == self.ai_player: score += 10
-            elif board_state[r, c] == self.human_player: score -= 10
+        for window in _get_all_5_windows(board):
+            score += _score_window_for(window, self.ai_player)
+            score -= _score_window_for(window, self.human_player)
+
+        for r, c in _CENTERS:
+            if   board[r, c] == self.ai_player:    score += _CENTER_BONUS
+            elif board[r, c] == self.human_player: score -= _CENTER_BONUS
+        for r, c in _CORNERS:
+            if   board[r, c] == self.ai_player:    score += _CORNER_BONUS
+            elif board[r, c] == self.human_player: score -= _CORNER_BONUS
         return score
 
-    def alpha_beta(self, board_state: np.ndarray, depth: int, alpha: float, beta: float, maximizing_player: bool):
-        winner = check_winner(board_state)
-        if depth == 0 or winner != -1:
-            return self.evaluate_board(board_state), None
-        moves = legal_moves(board_state)
-        best_move = None
-        if maximizing_player:
+    # ── Immediate-threat scanner ──────────────────────────────────────────────
+    def _immediate_win_cell(self, board: np.ndarray, player: int):
+        """
+        Returns (row, col) if `player` can place there and win (with or
+        without any subsequent rotation).  O(36 × 8) — very fast.
+        """
+        empties = list(zip(*np.where(board == EMPTY)))
+        for (r, c) in empties:
+            nb = place_marble(board, r, c, player)
+            if check_winner(nb) == player:
+                return (r, c)
+            for q in range(4):
+                for d in (1, -1):
+                    if check_winner(rotate_quadrant(nb, q, d)) == player:
+                        return (r, c)
+        return None
+
+    def _best_block_move(self, board: np.ndarray, threat_rc: tuple) -> tuple:
+        """Block the threat cell with the rotation that leaves AI best off."""
+        r, c = threat_rc
+        best_score, best_move = -math.inf, None
+        for q in range(4):
+            for d in (1, -1):
+                nb = apply_move(board, (r, c, q, d), self.ai_player)
+                s  = self.evaluate_board(nb)
+                if s > best_score:
+                    best_score, best_move = s, (r, c, q, d)
+        return best_move
+
+    # ── Move ordering ─────────────────────────────────────────────────────────
+    def _order_moves(self, moves: list, board: np.ndarray, maximizing: bool) -> list:
+        player = self.ai_player if maximizing else self.human_player
+        scored = [(self.evaluate_board(apply_move(board, m, player)), m)
+                  for m in moves]
+        scored.sort(key=lambda x: x[0], reverse=maximizing)
+        return [m for _, m in scored]
+
+    # ── Alpha-beta with deadline ──────────────────────────────────────────────
+    def alpha_beta(self, board: np.ndarray, depth: int,
+                   alpha: float, beta: float,
+                   maximizing: bool,
+                   deadline: float = math.inf):
+        winner = check_winner(board)
+        if depth == 0 or winner != -1 or is_board_full(board):
+            return self.evaluate_board(board), None
+
+        if _time.monotonic() > deadline:
+            return self.evaluate_board(board), None
+
+        moves = self._order_moves(legal_moves(board), board, maximizing)
+        best_move = moves[0] if moves else None
+
+        if maximizing:
             max_eval = -math.inf
             for move in moves:
-                nb = apply_move(board_state, move, self.ai_player)
-                eval_score, _ = self.alpha_beta(nb, depth - 1, alpha, beta, False)
-                if eval_score > max_eval:
-                    max_eval = eval_score
-                    best_move = move
-                alpha = max(alpha, eval_score)
+                if _time.monotonic() > deadline: break
+                nb = apply_move(board, move, self.ai_player)
+                score, _ = self.alpha_beta(nb, depth - 1, alpha, beta, False, deadline)
+                if score > max_eval:
+                    max_eval, best_move = score, move
+                alpha = max(alpha, score)
                 if beta <= alpha: break
             return max_eval, best_move
         else:
             min_eval = math.inf
             for move in moves:
-                nb = apply_move(board_state, move, self.human_player)
-                eval_score, _ = self.alpha_beta(nb, depth - 1, alpha, beta, True)
-                if eval_score < min_eval:
-                    min_eval = eval_score
-                    best_move = move
-                beta = min(beta, eval_score)
+                if _time.monotonic() > deadline: break
+                nb = apply_move(board, move, self.human_player)
+                score, _ = self.alpha_beta(nb, depth - 1, alpha, beta, True, deadline)
+                if score < min_eval:
+                    min_eval, best_move = score, move
+                beta = min(beta, score)
                 if beta <= alpha: break
             return min_eval, best_move
 
-    def get_best_move(self, board_state: np.ndarray, depth=2):
-        _, move = self.alpha_beta(board_state, depth, -math.inf, math.inf, True)
-        return move
+    # ── Public entry point: iterative deepening ───────────────────────────────
+    def get_best_move(self, board: np.ndarray,
+                      depth: int = 3,
+                      time_limit: float = 2.5) -> tuple:
+        """
+        Iterative-deepening alpha-beta.  Searches d=1,2,...,depth within
+        time_limit seconds and returns the best move from the deepest
+        completed iteration.
+        """
+        # Fast path A: AI can win immediately
+        win_cell = self._immediate_win_cell(board, self.ai_player)
+        if win_cell is not None:
+            r, c = win_cell
+            for q in range(4):
+                for d in (1, -1):
+                    if check_winner(apply_move(board, (r, c, q, d), self.ai_player)) == self.ai_player:
+                        return (r, c, q, d)
+            return (r, c, 0, 1)
+
+        # Fast path B: block opponent immediate win
+        threat_cell = self._immediate_win_cell(board, self.human_player)
+        if threat_cell is not None:
+            return self._best_block_move(board, threat_cell)
+
+        # Iterative deepening
+        deadline  = _time.monotonic() + time_limit
+        best_move = None
+        for d in range(1, depth + 1):
+            if _time.monotonic() >= deadline: break
+            _, move = self.alpha_beta(board, d, -math.inf, math.inf, True, deadline)
+            if move is not None:
+                best_move = move
+
+        if best_move is None:
+            moves = legal_moves(board)
+            best_move = moves[0] if moves else (0, 0, 0, 1)
+        return best_move
+
 
 # ==========================================
 # 3. PYGAME INIT & THEME
@@ -178,7 +319,6 @@ BOARD_SIZE = CELL_SIZE * 6
 MARGIN_X = (WIDTH - BOARD_SIZE) // 2
 MARGIN_Y = 115
 
-# ---- Color Palette: Deep Mahogany Board Game ----
 C_BG_TOP        = (18,  12,  8)
 C_BG_BTM        = (36,  22, 12)
 C_BOARD_DARK    = (58,  32, 14)
@@ -202,7 +342,6 @@ C_RED_HOVER     = (120, 32, 26)
 C_RED_BORDER    = (180, 60, 50)
 C_SHADOW        = (0,   0,  0, 120)
 
-# ---- Marble gradients ----
 BLACK_MARBLE_OUTER = (28, 28, 35)
 BLACK_MARBLE_MID   = (50, 50, 62)
 BLACK_MARBLE_SHINE = (110,110,135)
@@ -210,8 +349,8 @@ WHITE_MARBLE_OUTER = (195,185,168)
 WHITE_MARBLE_MID   = (238,232,218)
 WHITE_MARBLE_SHINE = (255,253,248)
 
-FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__
-    if "__file__" in dir() else __import__("sys").argv[0])), "fonts")
+FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(
+    __file__ if "__file__" in dir() else __import__("sys").argv[0])), "fonts")
 
 def load_font(name, size, bold=False):
     path = os.path.join(FONT_DIR, name)
@@ -229,11 +368,11 @@ font_symbol  = pygame.font.SysFont("segoeuisymbol", 20)
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("Pentago — Group 8")
 
+
 # ==========================================
 # DRAWING UTILITIES
 # ==========================================
 def draw_gradient_rect(surface, rect, top_color, bot_color, radius=0):
-    """Vertical gradient fill inside a rect."""
     x, y, w, h = rect
     for i in range(h):
         t = i / max(h - 1, 1)
@@ -244,7 +383,6 @@ def draw_gradient_rect(surface, rect, top_color, bot_color, radius=0):
 
 def draw_background(surface):
     draw_gradient_rect(surface, (0, 0, WIDTH, HEIGHT), C_BG_TOP, C_BG_BTM)
-    # Subtle noise texture via small semi-transparent dots
     noise_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
     rng = np.random.default_rng(42)
     for _ in range(500):
@@ -255,7 +393,6 @@ def draw_background(surface):
     surface.blit(noise_surf, (0, 0))
 
 def draw_marble(surface, cx, cy, radius, player):
-    """Draws a 3D-looking marble with gradient circles."""
     if player == BLACK:
         layers = [
             (BLACK_MARBLE_OUTER, 0),
@@ -275,13 +412,11 @@ def draw_marble(surface, cx, cy, radius, player):
         shine_r   = radius * 0.22
         shine_col = (255, 255, 255)
 
-    # Drop shadow
     shadow_surf = pygame.Surface((int(radius*2+8), int(radius*2+8)), pygame.SRCALPHA)
     pygame.draw.circle(shadow_surf, (0, 0, 0, 80),
                        (int(radius+4), int(radius+6)), int(radius))
     surface.blit(shadow_surf, (int(cx - radius), int(cy - radius + 2)))
 
-    # Marble body layers (approximating radial gradient)
     for i in range(int(radius), 0, -1):
         t = 1.0 - (i / radius)
         if t < 0.55:
@@ -294,7 +429,6 @@ def draw_marble(surface, cx, cy, radius, player):
             col = layers[2][0]
         pygame.draw.circle(surface, col, (cx, cy), i)
 
-    # Specular shine
     sx = cx + int(shine_off[0])
     sy = cy + int(shine_off[1])
     shine_surf = pygame.Surface((int(shine_r*4), int(shine_r*4)), pygame.SRCALPHA)
@@ -318,11 +452,9 @@ def draw_decorative_line(surface, x1, y1, x2, y2):
     pygame.draw.circle(surface, C_GOLD_DIM, (x2, y2), 3)
 
 def draw_panel(surface, rect, radius=10):
-    """Draws a raised wooden panel with gradient."""
     x, y, w, h = rect
     draw_gradient_rect(surface, rect, C_BOARD_MID, C_BOARD_DARK, radius)
     pygame.draw.rect(surface, C_QUAD_BORDER, rect, 2, border_radius=radius)
-    # Inner bevel highlight
     pygame.draw.line(surface, C_QUAD_LIGHT, (x+3, y+3), (x+w-4, y+3), 1)
     pygame.draw.line(surface, C_QUAD_LIGHT, (x+3, y+3), (x+3, y+h-4), 1)
 
@@ -333,13 +465,11 @@ def draw_panel(surface, rect, radius=10):
 QUAD_NAMES = ["Q1", "Q2", "Q3", "Q4"]
 
 def draw_board(surface, game: GameState, animating_quad=-1):
-    # Board outer shadow
     shadow_surf = pygame.Surface((BOARD_SIZE + 24, BOARD_SIZE + 24), pygame.SRCALPHA)
     pygame.draw.rect(shadow_surf, (0, 0, 0, 100),
                      (0, 0, BOARD_SIZE + 24, BOARD_SIZE + 24), border_radius=18)
     surface.blit(shadow_surf, (MARGIN_X - 12, MARGIN_Y - 12))
 
-    # Board base
     board_rect = (MARGIN_X, MARGIN_Y, BOARD_SIZE, BOARD_SIZE)
     draw_gradient_rect(surface, board_rect, C_BOARD_MID, C_BOARD_DARK)
     pygame.draw.rect(surface, C_QUAD_BORDER,
@@ -353,18 +483,15 @@ def draw_board(surface, game: GameState, animating_quad=-1):
         quad_y = MARGIN_Y + qr * CELL_SIZE
         quad_rect = (quad_x + 2, quad_y + 2, 3*CELL_SIZE - 4, 3*CELL_SIZE - 4)
 
-        # Quadrant panel
         draw_gradient_rect(surface, quad_rect, C_QUAD_LIGHT, C_BOARD_MID, 8)
         pygame.draw.rect(surface, C_QUAD_BORDER,
                          pygame.Rect(*quad_rect), 1, border_radius=8)
 
-        # Low-opacity quadrant name watermark  ← FIX #2
         wm_surf = font_title.render(QUAD_NAMES[q], True, C_GOLD)
         wm_surf.set_alpha(22)
         wm_rect = wm_surf.get_rect(center=(quad_x + 1.5*CELL_SIZE, quad_y + 1.5*CELL_SIZE))
         surface.blit(wm_surf, wm_rect)
 
-        # Cells & marbles
         for r in range(3):
             for c in range(3):
                 cx = quad_x + c * CELL_SIZE
@@ -372,7 +499,6 @@ def draw_board(surface, game: GameState, animating_quad=-1):
                 cell_rect = pygame.Rect(cx, cy, CELL_SIZE, CELL_SIZE)
                 pygame.draw.rect(surface, C_CELL_LINE, cell_rect, 1)
 
-                # Hole / slot indicator
                 slot_cx = cx + CELL_SIZE // 2
                 slot_cy = cy + CELL_SIZE // 2
                 pygame.draw.circle(surface, C_BOARD_DARK, (slot_cx, slot_cy), CELL_SIZE // 2 - 10)
@@ -383,7 +509,6 @@ def draw_board(surface, game: GameState, animating_quad=-1):
                     draw_marble(surface, slot_cx, slot_cy,
                                 CELL_SIZE // 2 - 11, val)
 
-    # Central divider lines
     lx = MARGIN_X + 3 * CELL_SIZE
     ly = MARGIN_Y + 3 * CELL_SIZE
     pygame.draw.line(surface, C_DIVIDER,
@@ -394,7 +519,6 @@ def draw_board(surface, game: GameState, animating_quad=-1):
     pygame.draw.circle(surface, C_BOARD_DARK, (lx, ly), 4)
 
 def draw_quadrant_anim(surface, board, q, offset_x, offset_y):
-    """Draws a 3×3 quadrant onto a surface for animation."""
     qr, qc = QUAD_ORIGINS[q]
     quad_rect = (0, 0, 3*CELL_SIZE, 3*CELL_SIZE)
     draw_gradient_rect(surface, quad_rect, C_QUAD_LIGHT, C_BOARD_MID)
@@ -429,11 +553,11 @@ def get_board_cell(mouse_pos: tuple) -> Optional[tuple[int, int]]:
 class Button:
     def __init__(self, x, y, w, h, text, action_val=None,
                  danger=False, symbol=False):
-        self.rect   = pygame.Rect(x, y, w, h)
-        self.text   = text
+        self.rect       = pygame.Rect(x, y, w, h)
+        self.text       = text
         self.action_val = action_val
-        self.danger = danger
-        self.symbol = symbol   # use symbol font for arrows
+        self.danger     = danger
+        self.symbol     = symbol
 
     def draw(self, surface):
         hovered = self.rect.collidepoint(pygame.mouse.get_pos())
@@ -444,16 +568,14 @@ class Button:
             face   = C_BTN_HOVER   if hovered else C_BTN_FACE
             border = C_BTN_HOT_BDR if hovered else C_BTN_BORDER
 
-        # Gradient face
         draw_gradient_rect(surface, self.rect, face,
                            tuple(max(0, c - 20) for c in face))
         pygame.draw.rect(surface, border, self.rect, 2, border_radius=8)
-        # Inner top-highlight
         inner = self.rect.inflate(-4, -4)
         pygame.draw.line(surface, tuple(min(255, c + 30) for c in face),
                          (inner.x, inner.y), (inner.right, inner.y), 1)
 
-        f = font_symbol if self.symbol else font_label
+        f   = font_symbol if self.symbol else font_label
         col = C_TEXT_BRIGHT if hovered else C_TEXT_MID
         ts  = f.render(self.text, True, col)
         tr  = ts.get_rect(center=self.rect.center)
@@ -464,60 +586,54 @@ class Button:
 # MAIN LOOP
 # ==========================================
 def main():
-    clock = pygame.time.Clock()
+    clock     = pygame.time.Clock()
     app_state = "MENU"
 
     # ---- Menu widgets ----
-    input_box = pygame.Rect(WIDTH//2 - 160, HEIGHT//2 - 155, 320, 42)
-    color_btn_white = Button(WIDTH//2 - 170, HEIGHT//2 - 88, 160, 42, "White  (1st)", WHITE)
-    color_btn_black = Button(WIDTH//2 +  10, HEIGHT//2 - 88, 160, 42, "Black  (2nd)", BLACK)
-    bo1_btn = Button(WIDTH//2 - 165, HEIGHT//2 - 22, 100, 38, "Best of 1", 1)
-    bo3_btn = Button(WIDTH//2 -  50, HEIGHT//2 - 22, 100, 38, "Best of 3", 3)
-    bo5_btn = Button(WIDTH//2 +  65, HEIGHT//2 - 22, 100, 38, "Best of 5", 5)
-    start_btn = Button(WIDTH//2 - 110, HEIGHT//2 + 40, 220, 52, "START SERIES")
+    input_box        = pygame.Rect(WIDTH//2 - 160, HEIGHT//2 - 155, 320, 42)
+    color_btn_white  = Button(WIDTH//2 - 170, HEIGHT//2 - 88,  160, 42, "White  (1st)", WHITE)
+    color_btn_black  = Button(WIDTH//2 +  10, HEIGHT//2 - 88,  160, 42, "Black  (2nd)", BLACK)
+    bo1_btn          = Button(WIDTH//2 - 165, HEIGHT//2 - 22,  100, 38, "Best of 1", 1)
+    bo3_btn          = Button(WIDTH//2 -  50, HEIGHT//2 - 22,  100, 38, "Best of 3", 3)
+    bo5_btn          = Button(WIDTH//2 +  65, HEIGHT//2 - 22,  100, 38, "Best of 5", 5)
+    start_btn        = Button(WIDTH//2 - 110, HEIGHT//2 + 40,  220, 52, "START SERIES")
 
     # ---- Series / game vars ----
-    player_name      = ""
-    active_input     = False
-    base_human_color = WHITE
-    best_of_series   = 1
-    target_wins      = 1
-    human_wins       = 0
-    ai_wins          = 0
+    player_name         = ""
+    active_input        = False
+    base_human_color    = WHITE
+    best_of_series      = 1
+    target_wins         = 1
+    human_wins          = 0
+    ai_wins             = 0
     current_human_color = WHITE
     current_ai_color    = BLACK
     game = None
     ai   = None
 
-    # ---- Rotation buttons  ← FIX #3: 2×4 grid layout ----
-    #  Row 0: Q1R Q1L Q2R Q2L
-    #  Row 1: Q3R Q3L Q4R Q4L
+    # ---- Rotation buttons ----
     btn_w, btn_h, btn_gap = 106, 46, 6
     grid_total_w = 4 * btn_w + 3 * btn_gap
     grid_x0 = (WIDTH - grid_total_w) // 2
     grid_y0 = MARGIN_Y + BOARD_SIZE + 16
 
-    # quad order for the grid: Q0,Q1,Q2,Q3 → labels Q1..Q4
-    # Row 0: Q0, Q1   |  Row 1: Q2, Q3
     rot_buttons = []
     for qi in range(4):
-        row = qi // 2
-        col_base = (qi % 2) * 2     # 0 or 2
-        bx_cw  = grid_x0 + col_base       * (btn_w + btn_gap)
-        bx_ccw = grid_x0 + (col_base + 1) * (btn_w + btn_gap)
-        by     = grid_y0 + row * (btn_h + btn_gap)
-        label  = f"Q{qi+1}"
+        row      = qi // 2
+        col_base = (qi % 2) * 2
+        bx_cw    = grid_x0 + col_base       * (btn_w + btn_gap)
+        bx_ccw   = grid_x0 + (col_base + 1) * (btn_w + btn_gap)
+        by       = grid_y0 + row * (btn_h + btn_gap)
+        label    = f"Q{qi+1}"
         rot_buttons.append(Button(bx_cw,  by, btn_w, btn_h,
                                   f"{label} ↻", (qi,  1), symbol=True))
         rot_buttons.append(Button(bx_ccw, by, btn_w, btn_h,
                                   f"{label} ↺", (qi, -1), symbol=True))
 
     # ---- In-game overlay buttons ----
-    overlay_y = grid_y0 + 2 * (btn_h + btn_gap) + 10
-    surrender_btn   = Button(WIDTH//2 - 220, overlay_y, 200, 40,
-                             "Surrender", danger=True)
-    main_menu_btn   = Button(WIDTH//2 +  20, overlay_y, 200, 40,
-                             "Main Menu", danger=False)
+    overlay_y     = grid_y0 + 2 * (btn_h + btn_gap) + 10
+    surrender_btn = Button(WIDTH//2 - 220, overlay_y, 200, 40, "Surrender", danger=True)
+    main_menu_btn = Button(WIDTH//2 +  20, overlay_y, 200, 40, "Main Menu",  danger=False)
 
     # ---- Post-game buttons ----
     next_match_btn   = Button(WIDTH//2 - 215, overlay_y, 200, 46, "Next Match")
@@ -525,17 +641,16 @@ def main():
     full_restart_btn = Button(WIDTH//2 - 110, overlay_y, 220, 46, "Main Menu")
 
     # ---- Animation state ----
-    animating   = False
-    anim_q      = 0
-    anim_d      = 0
-    anim_angle  = 0
+    animating    = False
+    anim_q       = 0
+    anim_d       = 0
+    anim_angle   = 0
     target_angle = 0
-    anim_surf   = None
-    quad_center = (0, 0)
+    anim_surf    = None
+    quad_center  = (0, 0)
 
     status_msg = ""
 
-    # Pre-render static background once
     bg_surf = pygame.Surface((WIDTH, HEIGHT))
     draw_background(bg_surf)
 
@@ -548,7 +663,6 @@ def main():
         # STATE: MAIN MENU
         # ==========================================
         if app_state == "MENU":
-            # Decorative frame
             frame = pygame.Rect(WIDTH//2 - 240, HEIGHT//2 - 280, 480, 400)
             draw_panel(screen, frame, radius=14)
             draw_decorative_line(screen, frame.x + 20, frame.y + 8,
@@ -556,12 +670,10 @@ def main():
             draw_decorative_line(screen, frame.x + 20, frame.bottom - 8,
                                  frame.right - 20, frame.bottom - 8)
 
-            draw_gold_text(screen, "PENTAGO", font_title,
-                           WIDTH//2, HEIGHT//2 - 240)
+            draw_gold_text(screen, "PENTAGO", font_title,  WIDTH//2, HEIGHT//2 - 240)
             draw_gold_text(screen, "Game Setup", font_heading,
                            WIDTH//2, HEIGHT//2 - 205, color=C_TEXT_MID)
 
-            # Name input
             name_lbl = font_ui_sm.render("Player Name", True, C_TEXT_DIM)
             screen.blit(name_lbl, (input_box.x, input_box.y - 18))
             ib_color = C_GOLD if active_input else C_BTN_BORDER
@@ -572,16 +684,14 @@ def main():
                                        True, C_TEXT_BRIGHT)
             screen.blit(name_surf, (input_box.x + 10, input_box.y + 10))
 
-            # Color label
             col_lbl = font_ui_sm.render("Choose Color", True, C_TEXT_DIM)
             screen.blit(col_lbl, (color_btn_white.rect.x, color_btn_white.rect.y - 18))
             color_btn_white.draw(screen)
             color_btn_black.draw(screen)
-            active_col_rect = color_btn_white.rect if base_human_color == WHITE \
-                              else color_btn_black.rect
+            active_col_rect = (color_btn_white.rect if base_human_color == WHITE
+                               else color_btn_black.rect)
             pygame.draw.rect(screen, C_GOLD, active_col_rect, 2, border_radius=8)
 
-            # Series label
             ser_lbl = font_ui_sm.render("Series Format", True, C_TEXT_DIM)
             screen.blit(ser_lbl, (bo1_btn.rect.x, bo1_btn.rect.y - 18))
             bo1_btn.draw(screen); bo3_btn.draw(screen); bo5_btn.draw(screen)
@@ -604,12 +714,12 @@ def main():
                     if start_btn.rect.collidepoint(event.pos):
                         if not player_name: player_name = "Player"
                         human_wins = ai_wins = 0
-                        target_wins = (best_of_series // 2) + 1
+                        target_wins         = (best_of_series // 2) + 1
                         current_human_color = base_human_color
-                        current_ai_color = BLACK if current_human_color == WHITE else WHITE
+                        current_ai_color    = BLACK if current_human_color == WHITE else WHITE
                         game = GameState()
-                        ai = PentagoAI(ai_player=current_ai_color,
-                                       human_player=current_human_color)
+                        ai   = PentagoAI(ai_player=current_ai_color,
+                                         human_player=current_human_color)
                         app_state = "PLAYING"
                 if event.type == pygame.KEYDOWN and active_input:
                     if event.key == pygame.K_BACKSPACE: player_name = player_name[:-1]
@@ -627,11 +737,9 @@ def main():
             c_str = "White" if current_human_color == WHITE else "Black"
             draw_gold_text(screen, f"You are {c_str}  ·  Best of {best_of_series}",
                            font_ui_sm, WIDTH//2, 80, color=C_TEXT_DIM)
-
-            # Decorative header lines
             draw_decorative_line(screen, MARGIN_X, 95, MARGIN_X + BOARD_SIZE, 95)
 
-            # ---- Update status message while playing ----
+            # ---- Update status message ----
             if app_state == "PLAYING" and not animating:
                 curr_name = player_name if game.turn == current_human_color else "AI"
                 if game.phase == "place":
@@ -639,26 +747,25 @@ def main():
                 else:
                     status_msg = f"{curr_name}  ·  Rotate a quadrant"
 
-            # ---- AI Move  ← FIX #1: draw board FIRST, then overlay "thinking" ----
+            # ---- AI Move ----
             if app_state == "PLAYING" and game.turn == current_ai_color and not animating:
                 if game.phase == "place":
-                    # Draw board first so it stays visible
                     draw_board(screen, game)
                     think_surf = font_heading.render("AI is thinking…", True, C_GOLD)
                     think_rect = think_surf.get_rect(
                         centerx=WIDTH//2,
                         centery=grid_y0 + btn_h + btn_gap // 2
                     )
-                    # Dim backdrop behind text
                     pad = 16
                     bg = pygame.Surface((think_surf.get_width() + pad*2,
                                          think_surf.get_height() + pad), pygame.SRCALPHA)
                     bg.fill((0, 0, 0, 160))
                     screen.blit(bg, (think_rect.x - pad, think_rect.y - pad // 2))
                     screen.blit(think_surf, think_rect)
-                    pygame.display.flip()   # show "thinking" frame with board intact
+                    pygame.display.flip()
 
-                    r, c, q, d = ai.get_best_move(game.board, depth=2)
+                    # ---- AI uses improved get_best_move (IDDFS, depth=3) ----
+                    r, c, q, d = ai.get_best_move(game.board, depth=3, time_limit=2.5)
                     game.place(r, c)
 
                     if not game.is_over():
@@ -674,9 +781,9 @@ def main():
                                        MARGIN_Y + qr*CELL_SIZE + 1.5*CELL_SIZE)
                     else:
                         app_state = "EVALUATE_WIN"
-                    continue   # skip rest of loop body; already flipped
+                    continue
 
-            # ---- Render board (animation or static) ----
+            # ---- Render board ----
             if animating:
                 step = -10 if target_angle < 0 else 10
                 anim_angle += step
@@ -697,7 +804,7 @@ def main():
             else:
                 draw_board(screen, game)
 
-            # ---- Evaluate win (transition state — board already drawn above) ----
+            # ---- Evaluate win ----
             if app_state == "EVALUATE_WIN":
                 if game.winner == current_human_color:
                     human_wins += 1
@@ -711,13 +818,13 @@ def main():
                              if human_wins == target_wins or ai_wins == target_wins
                              else "ROUND_OVER")
 
-            # ---- Rotation buttons (only during player's rotate phase) ----
+            # ---- Rotation buttons ----
             if app_state == "PLAYING" and game.phase == "rotate" \
                     and game.turn == current_human_color and not animating:
                 for btn in rot_buttons:
                     btn.draw(screen)
 
-            # ---- In-game surrender / menu buttons ---- ← FIX #5
+            # ---- In-game surrender / menu ----
             if app_state == "PLAYING" and not animating:
                 surrender_btn.draw(screen)
                 main_menu_btn.draw(screen)
@@ -744,7 +851,6 @@ def main():
 
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
 
-                    # In-game surrender / menu  ← FIX #5
                     if app_state == "PLAYING" and not animating:
                         if surrender_btn.rect.collidepoint(event.pos):
                             ai_wins += 1
@@ -755,7 +861,6 @@ def main():
                         elif main_menu_btn.rect.collidepoint(event.pos):
                             app_state = "MENU"
 
-                    # Human place
                     if app_state == "PLAYING" and not animating \
                             and game.turn == current_human_color:
                         if game.phase == "place":
@@ -767,9 +872,9 @@ def main():
                             for btn in rot_buttons:
                                 if btn.rect.collidepoint(event.pos):
                                     anim_q, anim_d = btn.action_val
-                                    animating     = True
-                                    anim_angle    = 0
-                                    target_angle  = -90 if anim_d == 1 else 90
+                                    animating    = True
+                                    anim_angle   = 0
+                                    target_angle = -90 if anim_d == 1 else 90
                                     anim_surf = pygame.Surface(
                                         (3*CELL_SIZE, 3*CELL_SIZE), pygame.SRCALPHA)
                                     draw_quadrant_anim(anim_surf, game.board,
@@ -780,13 +885,12 @@ def main():
                                         MARGIN_Y + qr*CELL_SIZE + 1.5*CELL_SIZE)
                                     break
 
-                    # Post-round clicks
                     elif app_state == "ROUND_OVER":
                         if next_match_btn.rect.collidepoint(event.pos):
-                            current_human_color = BLACK if current_human_color == WHITE \
-                                                  else WHITE
-                            current_ai_color = BLACK if current_human_color == WHITE \
-                                               else WHITE
+                            current_human_color = (BLACK if current_human_color == WHITE
+                                                   else WHITE)
+                            current_ai_color    = (BLACK if current_human_color == WHITE
+                                                   else WHITE)
                             game = GameState()
                             ai   = PentagoAI(ai_player=current_ai_color,
                                              human_player=current_human_color)
@@ -803,6 +907,7 @@ def main():
 
     pygame.quit()
     sys.exit()
+
 
 if __name__ == "__main__":
     main()
