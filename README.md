@@ -1,4 +1,4 @@
-# Pentago — Group 8
+# PentagoAI — Group 8
 
 A two-player strategy board game built with Python and Pygame, featuring an AI opponent powered by iterative-deepening alpha-beta search.
 
@@ -6,7 +6,7 @@ A two-player strategy board game built with Python and Pygame, featuring an AI o
 
 ## Requirements
 
-- **Python 3.10 or higher** (3.12 recommended)
+- **Python 3.12**
 - **pip** (comes bundled with Python)
 
 ---
@@ -180,6 +180,3 @@ Run `pip install pygame` again, making sure you are using the same Python instal
 
 **Window does not open / crashes immediately**
 Ensure your system has a display available. Running over SSH without a display is not supported.
-
-**Fonts look plain/unstyled**
-The game optionally loads `Cinzel.ttf` and `Raleway.ttf` from a `fonts/` folder next to `Pentago.py`. If those files are absent, it falls back to system fonts automatically — this is not an error.
