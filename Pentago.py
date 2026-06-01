@@ -144,11 +144,11 @@ class GameState:
 #   the correct real-time algorithm; use GA only to tune weights separately.
 
 _WIN_SCORE    = 100_000
-_FOUR_SCORE   =  50_000   # much closer to a forced win — AI will chase these
-_THREE_SCORE  =   1_500   # threats are now taken seriously
-_TWO_SCORE    =     80    # early development matters more
-_CENTER_BONUS =     40    # center control is a real strategic advantage
-_CORNER_BONUS =     15    # quadrant corner cells
+_FOUR_SCORE   = 22417
+_THREE_SCORE  = 2530
+_TWO_SCORE    = 106
+_CENTER_BONUS = 66
+_CORNER_BONUS = 6
 
 _CENTERS = [(1, 1), (1, 4), (4, 1), (4, 4)]
 _CORNERS = [(0, 0), (0, 2), (0, 3), (0, 5),
