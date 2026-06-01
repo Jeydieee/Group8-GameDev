@@ -21,11 +21,13 @@ def copy_board(board: np.ndarray) -> np.ndarray:
     return board.copy()
 
 def place_marble(board: np.ndarray, row: int, col: int, player: int) -> np.ndarray:
+    # Places a player's marble on the board at the given cell, returns new board state.
     nb = copy_board(board)
     nb[row, col] = player
     return nb
 
 def rotate_quadrant(board: np.ndarray, quad: int, direction: int) -> np.ndarray:
+    # Rotates a 3x3 quadrant clockwise (1) or counter-clockwise (-1) using index permutation.
     nb = copy_board(board)
     qr, qc = QUAD_ORIGINS[quad]
     perm = _CW if direction == 1 else _CCW
@@ -37,6 +39,7 @@ def rotate_quadrant(board: np.ndarray, quad: int, direction: int) -> np.ndarray:
     return nb
 
 def _get_all_5_windows(board: np.ndarray):
+    # Yields every possible 5-in-a-row window (rows, columns, diagonals) for win checking.
     for r in range(6):
         for s in range(2): yield board[r, s:s+5]
     for c in range(6):
@@ -47,6 +50,7 @@ def _get_all_5_windows(board: np.ndarray):
         for c in range(4, 6): yield np.array([board[r+i, c-i] for i in range(5)])
 
 def check_winner(board: np.ndarray) -> int:
+    # Returns the winning player (BLACK/WHITE), 0 for draw, or -1 if game is still ongoing.
     black_wins = white_wins = False
     for window in _get_all_5_windows(board):
         if window[0] != EMPTY and np.all(window == window[0]):
@@ -64,6 +68,7 @@ def legal_placements(board: np.ndarray) -> list[tuple[int, int]]:
     return list(zip(*np.where(board == EMPTY)))
 
 def legal_moves(board: np.ndarray) -> list[tuple[int, int, int, int]]:
+    # Returns all valid (row, col, quadrant, direction) move combinations for the current board.
     moves = []
     for r, c in legal_placements(board):
         for q in range(4):
@@ -71,12 +76,14 @@ def legal_moves(board: np.ndarray) -> list[tuple[int, int, int, int]]:
     return moves
 
 def apply_move(board: np.ndarray, move: tuple, player: int) -> np.ndarray:
+    # Applies a full move (place marble + rotate quadrant) and returns the resulting board.
     r, c, q, d = move
     nb = place_marble(board, r, c, player)
     nb = rotate_quadrant(nb, q, d)
     return nb
 
 class GameState:
+    # Tracks the live game state: board, turn, phase (place/rotate), and win status.
     def __init__(self):
         self.board = new_board()
         self.turn = WHITE
@@ -86,6 +93,7 @@ class GameState:
         self.move_count = 0
 
     def place(self, row: int, col: int) -> bool:
+        # Handles the placement phase; transitions to rotate phase if no winner yet.
         if self.winner != -1 or self.phase != "place": return False
         if self.board[row, col] != EMPTY: return False
         self.board = place_marble(self.board, row, col, self.turn)
@@ -98,6 +106,7 @@ class GameState:
         return True
 
     def rotate(self, quad: int, direction: int, next_turn_player: int) -> bool:
+        # Handles the rotation phase; finalizes the turn and checks for win/draw.
         if self.winner != -1 or self.phase != "rotate": return False
         self.board = rotate_quadrant(self.board, quad, direction)
         w = check_winner(self.board)
@@ -114,6 +123,8 @@ class GameState:
 
 
 _WIN_SCORE    = 100_000
+
+# Output from training the Genetic Algo to the game
 _FOUR_SCORE   = 22417
 _THREE_SCORE  = 2530
 _TWO_SCORE    = 106
@@ -127,6 +138,7 @@ _CORNERS = [(0, 0), (0, 2), (0, 3), (0, 5),
             (5, 0), (5, 2), (5, 3), (5, 5)]
 
 def _get_all_5_window_cells(board: np.ndarray):
+    # Yields cell coordinates for every 5-in-a-row window; used for threat detection.
     for r in range(6):
         for s in range(2): yield [(r, s+i) for i in range(5)]
     for c in range(6):
@@ -137,6 +149,7 @@ def _get_all_5_window_cells(board: np.ndarray):
         for c in range(4, 6): yield [(r+i, c-i) for i in range(5)]
 
 def _score_window_for(window: np.ndarray, player: int) -> int:
+    # Scores a single 5-cell window for a player based on marble count; 0 if contested.
     opp   = WHITE if player == BLACK else BLACK
     ai_n  = int(np.sum(window == player))
     opp_n = int(np.sum(window == opp))
@@ -154,6 +167,7 @@ class PentagoAI:
         self.human_player = human_player
 
     def evaluate_board(self, board: np.ndarray) -> int:
+        # Heuristic board evaluator: scores windows, center/corner bonuses, and double threats.
         winner = check_winner(board)
         if winner == self.ai_player:    return  _WIN_SCORE
         if winner == self.human_player: return -_WIN_SCORE
@@ -183,6 +197,7 @@ class PentagoAI:
         return score
 
     def _immediate_win_cell(self, board: np.ndarray, player: int):
+        # Scans all empty cells to find one that immediately wins the game for the given player.
         empties = list(zip(*np.where(board == EMPTY)))
         for (r, c) in empties:
             nb = place_marble(board, r, c, player)
@@ -195,6 +210,7 @@ class PentagoAI:
         return None
 
     def _is_critical_threat(self, board: np.ndarray, player: int) -> tuple:
+        # Detects a 4-in-a-row open threat for the given player and returns the blocking cell.
         opp = self.human_player if player == self.ai_player else self.ai_player
         for window_cells in _get_all_5_window_cells(board):
             vals  = [board[r, c] for r, c in window_cells]
@@ -208,6 +224,7 @@ class PentagoAI:
         return None
 
     def _best_block_move(self, board: np.ndarray, threat_rc: tuple) -> tuple:
+        # Selects the highest-scoring rotation to pair with a blocking placement.
         r, c = threat_rc
         best_score, best_move = -math.inf, None
         for q in range(4):
@@ -224,10 +241,12 @@ class PentagoAI:
         return best_move
 
     def _order_moves(self, moves: list, board: np.ndarray, maximizing: bool, current_player: int) -> list:
+        # Pre-sorts moves by heuristic score to improve alpha-beta pruning efficiency.
         scored = [(self.evaluate_board(apply_move(board, m, current_player)), m) for m in moves]
         scored.sort(key=lambda x: x[0], reverse=maximizing)
         return [m for _, m in scored]
 
+    # Alpha-Beta Pruning: minimax search that prunes branches outside the alpha-beta window.
     def alpha_beta(self, board: np.ndarray, depth: int, alpha: float, beta: float, maximizing: bool, deadline: float = math.inf, current_player: int = None):
         if current_player is None:
             current_player = self.ai_player
@@ -267,6 +286,7 @@ class PentagoAI:
                 if beta <= alpha: break
             return min_eval, best_move
 
+    # Iterative Deepening: runs alpha-beta at increasing depths within the time limit, keeping the best move found.
     def get_best_move(self, board: np.ndarray, depth: int = 4, time_limit: float = 3.5) -> tuple:
         win_cell = self._immediate_win_cell(board, self.ai_player)
         if win_cell is not None:
@@ -381,6 +401,7 @@ pygame.display.set_caption("Pentago — Group 8")
 
 
 def draw_gradient_rect(surface, rect, top_color, bot_color, radius=0):
+    # Draws a vertically interpolated gradient rectangle for background and UI panels.
     x, y, w, h = rect
     for i in range(h):
         t = i / max(h - 1, 1)
@@ -390,6 +411,7 @@ def draw_gradient_rect(surface, rect, top_color, bot_color, radius=0):
         pygame.draw.line(surface, (r, g, b), (x, y + i), (x + w - 1, y + i))
 
 def draw_background(surface):
+    # Renders the gradient background with a seeded noise overlay for texture.
     draw_gradient_rect(surface, (0, 0, WIDTH, HEIGHT), C_BG_TOP, C_BG_BTM)
     noise_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
     rng = np.random.default_rng(42)
@@ -401,6 +423,7 @@ def draw_background(surface):
     surface.blit(noise_surf, (0, 0))
 
 def draw_marble(surface, cx, cy, radius, player):
+    # Renders a marble with layered radial shading and a specular highlight.
     if player == BLACK:
         layers = [
             (BLACK_MARBLE_OUTER, 0),
@@ -445,6 +468,7 @@ def draw_marble(surface, cx, cy, radius, player):
     surface.blit(shine_surf, (sx - int(shine_r*2), sy - int(shine_r*2)))
 
 def draw_gold_text(surface, text, font, cx, cy, color=None, shadow=True):
+    # Draws centered text with an optional drop shadow for UI labels.
     col = color or C_GOLD
     if shadow:
         sh = font.render(text, True, (0, 0, 0))
@@ -453,11 +477,13 @@ def draw_gold_text(surface, text, font, cx, cy, color=None, shadow=True):
     surface.blit(surf, surf.get_rect(center=(cx, cy)))
 
 def draw_decorative_line(surface, x1, y1, x2, y2):
+    # Draws a gold UI separator line with dot caps at each end.
     pygame.draw.line(surface, C_GOLD_DIM, (x1, y1), (x2, y2), 1)
     pygame.draw.circle(surface, C_GOLD_DIM, (x1, y1), 3)
     pygame.draw.circle(surface, C_GOLD_DIM, (x2, y2), 3)
 
 def draw_panel(surface, rect, radius=10):
+    # Draws a styled gradient panel with a bordered rounded rectangle.
     x, y, w, h = rect
     draw_gradient_rect(surface, rect, C_BOARD_MID, C_BOARD_DARK, radius)
     pygame.draw.rect(surface, C_QUAD_BORDER, rect, 2, border_radius=radius)
@@ -468,6 +494,7 @@ def draw_panel(surface, rect, radius=10):
 QUAD_NAMES = ["Q1", "Q2", "Q3", "Q4"]
 
 def draw_board(surface, game: GameState, animating_quad=-1):
+    # Renders the full 6x6 board with quadrant panels, cell slots, and all placed marbles.
     shadow_surf = pygame.Surface((BOARD_SIZE + 24, BOARD_SIZE + 24), pygame.SRCALPHA)
     pygame.draw.rect(shadow_surf, (0, 0, 0, 100), (0, 0, BOARD_SIZE + 24, BOARD_SIZE + 24), border_radius=18)
     surface.blit(shadow_surf, (MARGIN_X - 12, MARGIN_Y - 12))
@@ -517,6 +544,7 @@ def draw_board(surface, game: GameState, animating_quad=-1):
     pygame.draw.circle(surface, C_BOARD_DARK, (lx, ly), 4)
 
 def draw_quadrant_anim(surface, board, q, offset_x, offset_y):
+    # Renders an isolated quadrant onto a surface for use during rotation animation.
     qr, qc = QUAD_ORIGINS[q]
     quad_rect = (0, 0, 3*CELL_SIZE, 3*CELL_SIZE)
     draw_gradient_rect(surface, quad_rect, C_QUAD_LIGHT, C_BOARD_MID)
@@ -538,6 +566,7 @@ def draw_quadrant_anim(surface, board, q, offset_x, offset_y):
                             CELL_SIZE // 2 - 11, val)
 
 def get_board_cell(mouse_pos: tuple) -> Optional[tuple[int, int]]:
+    # Converts a mouse pixel position to a board (row, col) cell index, or None if outside.
     x, y = mouse_pos
     if not (MARGIN_X <= x <= MARGIN_X + BOARD_SIZE and MARGIN_Y <= y <= MARGIN_Y + BOARD_SIZE):
         return None
@@ -545,6 +574,7 @@ def get_board_cell(mouse_pos: tuple) -> Optional[tuple[int, int]]:
 
 
 class Button:
+    # Reusable UI button with hover state, danger styling, and optional symbol font.
     def __init__(self, x, y, w, h, text, action_val=None, danger=False, symbol=False):
         self.rect       = pygame.Rect(x, y, w, h)
         self.text       = text
@@ -574,6 +604,7 @@ class Button:
 
 
 def main():
+    # Main game loop: manages app state transitions (MENU → PLAYING → ROUND_OVER → SERIES_OVER).
     clock     = pygame.time.Clock()
     app_state = "MENU"
 
@@ -766,12 +797,12 @@ def main():
             if app_state == "EVALUATE_WIN":
                 if game.winner == current_human_color:
                     human_wins += 1
-                    status_msg = f"🎉  {player_name} wins the round!"
+                    status_msg = f"{player_name} wins the round!"
                 elif game.winner == current_ai_color:
                     ai_wins += 1
-                    status_msg = "🤖  AI wins the round!"
+                    status_msg = "AI wins the round!"
                 else:
-                    status_msg = "🤝  Round drawn!"
+                    status_msg = "Round drawn!"
                 app_state = ("SERIES_OVER" if human_wins == target_wins or ai_wins == target_wins else "ROUND_OVER")
 
             if app_state == "PLAYING" and game.phase == "rotate" \
@@ -788,9 +819,9 @@ def main():
                 restart_menu_btn.draw(screen)
             elif app_state == "SERIES_OVER":
                 if human_wins > ai_wins:
-                    status_msg = f"🏆  {player_name} wins the series!"
+                    status_msg = f"{player_name} wins the series!"
                 else:
-                    status_msg = "💀  AI wins the series!"
+                    status_msg = "AI wins the series!"
                 full_restart_btn.draw(screen)
 
             draw_gold_text(screen, status_msg, font_heading, WIDTH//2, HEIGHT - 30, color=C_TEXT_BRIGHT if app_state == "PLAYING" else C_GOLD)

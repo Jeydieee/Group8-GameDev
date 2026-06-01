@@ -200,11 +200,8 @@ def tournament(population: list):
     pairs = []
     for i in range(len(population)):
         for j in range(i + 1, len(population)):
-            pairs.append((i, j,
-                          population[i].weights.copy(),
-                          population[j].weights.copy()))
+            pairs.append((i, j, population[i].weights.copy(), population[j].weights.copy()))
 
-    # Kaggle gives 4 CPU cores — use all of them
     with Pool(processes=4) as pool:
         results = pool.map(_play_pair, pairs)
 
